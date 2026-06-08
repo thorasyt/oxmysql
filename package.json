@@ -1,0 +1,14 @@
+{
+  "name": "mariadb-fivem",
+  "version": "1.0.0",
+  "description": "MariaDB-based MySQL resource for FiveM with improved performance",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "node build.js"
+  },
+  "dependencies": {
+    "mariadb": "^3.2.3"
+  },
+  "author": "BLDR",
+  "license": "MIT"
+}
