@@ -92,6 +92,9 @@ for _, method in pairs({
     }, mysql_method_mt)
 end
 
+MySQL.execute = MySQL.query
+MySQL.fetch = MySQL.query
+
 local alias = {
     fetchAll = 'query',
     fetchScalar = 'scalar',
@@ -123,6 +126,7 @@ end
 
 MySQL.Sync = setmetatable({ store = addStore }, alias_mt)
 MySQL.Async = setmetatable({ store = addStore }, alias_mt)
+MySQL.store = addStore
 
 local function onReady(cb)
     while GetResourceState('oxmysql') ~= 'started' do
@@ -143,5 +147,15 @@ MySQL.ready = setmetatable({ await = onReady }, {
 function MySQL.startTransaction(cb)
     return oxmysql:startTransaction(cb, resourceName)
 end
+
+exports('mysql_execute', MySQL.execute)
+exports('mysql_fetch', MySQL.fetch)
+exports('mysql_fetch_all', MySQL.fetch)
+exports('mysql_fetch_scalar', MySQL.scalar)
+exports('mysql_fetch_single', MySQL.single)
+exports('mysql_insert', MySQL.insert)
+exports('mysql_transaction', MySQL.transaction)
+exports('mysql_store', MySQL.store)
+
 
 _ENV.MySQL = MySQL

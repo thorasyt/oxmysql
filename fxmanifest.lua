@@ -1,6 +1,6 @@
 fx_version 'cerulean'
 game 'gta5'
-author 'BLDR'
+author 'Thoraz'
 description 'MariaDB-based MySQL resource with improved performance'
 version '2.7.3'
 
@@ -16,11 +16,14 @@ shared_scripts {
 
 server_scripts {
     'dist/index.js',
-    'lib/MySQL.lua',
 }
 
 client_scripts {
     'client/*.lua',
+}
+
+files {
+    'lib/MySQL.lua',
 }
 
 provide 'oxmysql'
