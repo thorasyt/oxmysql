@@ -1,9 +1,5 @@
-/// <reference path="./types.d.ts" />
-
 const mariadb = require('mariadb');
-
 let pool = null;
-
 let stats = {
   totalQueries: 0,
   failedQueries: 0,
@@ -14,39 +10,61 @@ let stats = {
 };
 
 const mysql_connection_string = GetConvar('mysql_connection_string', '') || 'mysql://root@localhost';
+const mysql_transaction_isolation_level = getIsolationLevelStatement(GetConvarInt('mysql_transaction_isolation_level', 2));
+
+function getIsolationLevelStatement(level) {
+  const query = 'SET TRANSACTION ISOLATION LEVEL';
+  switch (level) {
+    case 1: return `${query} REPEATABLE READ`;
+    case 2: return `${query} READ COMMITTED`;
+    case 3: return `${query} READ UNCOMMITTED`;
+    case 4: return `${query} SERIALIZABLE`;
+    default: return `${query} READ COMMITTED`;
+  }
+}
 
 function parseUri(connectionString) {
-  const match = connectionString.match(
-    /^mysql:\/\/(?:(([^:/?#@]+)(?::([^:/?#@]+))?@)?([^:/?#@]+)(?::(\d+))?\/([^?]+))?(?:\?(.*))?$/
-  );
-  
-  if (!match) {
-    throw new Error(`mysql_connection_string structure was invalid (${connectionString})`);
-  }
-
-  const options = {
-    user: match[2] || undefined,
-    password: match[3] || undefined,
-    host: match[4] || 'localhost',
-    port: match[5] ? parseInt(match[5]) : 3306,
-    database: match[6] ? match[6].replace(/^\//, '') : undefined,
-  };
-
-  if (match[7]) {
-    match[7].split('&').forEach(param => {
-      const [key, value] = param.split('=');
-      if (key && value !== undefined) {
-        options[key] = value;
-      }
+  try {
+    const url = new URL(connectionString);
+    const options = {
+      user: url.username || undefined,
+      password: url.password || undefined,
+      host: url.hostname || 'localhost',
+      port: url.port ? parseInt(url.port) : 3306,
+      database: url.pathname ? url.pathname.slice(1) : undefined,
+    };
+    url.searchParams.forEach((value, key) => {
+      options[key] = value;
     });
+    return options;
+  } catch (e) {
+    const match = connectionString.match(
+      /^mysql:\/\/(?:([^:@/?#]+)(?::([^:@/?#]*))?@)?([^:@/?#]+)(?::(\d+))?\/([^?]*)(?:\?(.*))?$/
+    );
+    if (!match) {
+      throw new Error(`mysql_connection_string structure was invalid (${connectionString})`);
+    }
+    const options = {
+      user: match[1] || undefined,
+      password: match[2] || undefined,
+      host: match[3] || 'localhost',
+      port: match[4] ? parseInt(match[4]) : 3306,
+      database: match[5] || undefined,
+    };
+    if (match[6]) {
+      match[6].split('&').forEach(param => {
+        const [key, value] = param.split('=');
+        if (key && value !== undefined) {
+          options[key] = value;
+        }
+      });
+    }
+    return options;
   }
-
-  return options;
 }
 
 function getConnectionOptions(connectionString = mysql_connection_string) {
   let options = {};
-
   if (connectionString.includes('mysql://')) {
     options = parseUri(connectionString);
   } else {
@@ -62,7 +80,6 @@ function getConnectionOptions(connectionString = mysql_connection_string) {
         return acc;
       }, {});
   }
-
   return {
     host: options.host || '127.0.0.1',
     port: options.port ? parseInt(options.port) : 3306,
@@ -82,7 +99,7 @@ function getConnectionOptions(connectionString = mysql_connection_string) {
 }
 
 const config = getConnectionOptions();
-const slowQueryThreshold = parseInt(GetConvar('mysql_slow_query_threshold', '100'));
+const slowQueryThreshold = parseInt(GetConvar('mysql_slow_query_threshold', '0'));
 
 function formatDate(date) {
   if (!date) return null;
@@ -119,14 +136,11 @@ function parseRow(row) {
 
 function parseResult(result, mode) {
   if (!result) return result;
-
   if (!Array.isArray(result) && typeof result === 'object' && result.affectedRows !== undefined) {
     const affectedRows = Number(result.affectedRows || 0);
     const insertId = Number(result.insertId || 0);
-
     if (mode === 'insert') return insertId;
     if (mode === 'update') return affectedRows;
-
     return {
       affectedRows,
       insertId,
@@ -134,7 +148,6 @@ function parseResult(result, mode) {
       changedRows: Number(result.changedRows || 0)
     };
   }
-
   if (mode === 'scalar') {
     if (Array.isArray(result) && result.length > 0) {
       const row = result[0];
@@ -146,14 +159,12 @@ function parseResult(result, mode) {
     }
     return null;
   }
-
   if (mode === 'single') {
     if (Array.isArray(result) && result.length > 0) {
       return parseRow(result[0]);
     }
     return null;
   }
-
   if (mode === 'prepare') {
     if (Array.isArray(result)) {
       const values = result.map(row => {
@@ -162,20 +173,15 @@ function parseResult(result, mode) {
           const keys = Object.keys(parsed);
           return keys.length === 1 ? parsed[keys[0]] : parsed;
         }
-
         return row;
       });
-
       return values.length === 1 ? values[0] : values;
     }
-
     return result;
   }
-
   if (Array.isArray(result)) {
     return result.map(row => parseRow(row));
   }
-
   return result;
 }
 
@@ -190,15 +196,12 @@ function logQuery(query, parameters, executionTime, resource, error) {
     error: error ? error.message : null,
     isSlow
   };
-
   stats.queries.unshift(entry);
   if (stats.queries.length > 50) stats.queries.pop();
-
   if (isSlow && slowQueryThreshold > 0) {
     stats.slowQueries++;
     console.log(`^3[mariaDB] Slow query (${executionTime}ms) from ${resource}: ${query.substring(0, 100)}^0`);
   }
-
   if (error) {
     console.log(`^1[mariaDB] Query error from ${resource}: ${error.message}^0`);
   }
@@ -213,12 +216,17 @@ function updateStats(executionTime, failed = false) {
 async function createConnectionPool() {
   try {
     pool = mariadb.createPool(config);
-    
+
+    pool.on('connection', (connection) => {
+      connection.query(mysql_transaction_isolation_level).catch(() => { });
+    });
+
     const conn = await pool.getConnection();
     const [versionResult] = await conn.query('SELECT VERSION() as version');
     await conn.release();
 
-    const dbVersion = versionResult[0]?.version || 'unknown';
+    const dbVersion = versionResult?.version || 'unknown';
+
     console.log(`^5[${dbVersion}] ^2Database server connection established!^0`);
     console.log(`^2[mariaDB] Pool initialized with max ${config.connectionLimit} connections^0`);
 
@@ -231,15 +239,12 @@ async function createConnectionPool() {
     const message = err.message.includes('auth_gssapi_client')
       ? `Requested authentication using unknown plugin auth_gssapi_client.`
       : err.message;
-
     console.log(
       `^3Unable to establish a connection to the database (${err.code || 'unknown'})!\n^1Error${err.errno ? ` ${err.errno}` : ''}: ${message}^0`
     );
     console.log(`See https://github.com/overextended/oxmysql/issues/154 for more information.`);
-
     if (config.password) config.password = '******';
     console.log(config);
-
     pool = null;
   }
 }
@@ -265,8 +270,8 @@ async function executeQuery(query, parameters, resource, mode = null) {
   try {
     conn = await pool.getConnection();
     const result = await conn.query(query, parameters);
-    const executionTime = Date.now() - startTime;
 
+    const executionTime = Date.now() - startTime;
     logQuery(query, parameters, executionTime, resource, null);
     updateStats(executionTime);
 
@@ -285,15 +290,12 @@ function parseTransactionQuery(queryObj, parameters, index) {
   if (Array.isArray(queryObj)) {
     return parseArguments(queryObj[0], queryObj[1]);
   }
-
   if (queryObj && typeof queryObj === 'object') {
     return parseArguments(queryObj.query, queryObj.parameters || queryObj.values);
   }
-
   const queryParameters = Array.isArray(parameters) && Array.isArray(parameters[0])
     ? parameters[index]
     : parameters;
-
   return parseArguments(queryObj, queryParameters);
 }
 
@@ -313,8 +315,8 @@ async function executeTransaction(queries, parameters, resource) {
 
     for (let i = 0; i < parsedQueries.length; i++) {
       const [query, params] = parsedQueries[i];
-      const batchParams = [];
 
+      const batchParams = [];
       while (
         i < parsedQueries.length &&
         parsedQueries[i][0] === query &&
@@ -342,12 +344,10 @@ async function executeTransaction(queries, parameters, resource) {
 
     return true;
   } catch (err) {
-    if (conn) await conn.rollback().catch(() => {});
-
+    if (conn) await conn.rollback().catch(() => { });
     const executionTime = Date.now() - startTime;
     logQuery(`TRANSACTION FAILED`, null, executionTime, resource, err);
     updateStats(executionTime, true);
-
     console.log(`^1[mariaDB] Error in ${resource}: ${err.message}^0`);
     return false;
   } finally {
@@ -376,6 +376,7 @@ async function executeRaw(query, parameters, resource, prepare = false) {
           try {
             for (const values of parameters) {
               const response = await stmt.execute(values);
+
               if (Array.isArray(response)) {
                 result.push(...response);
               } else {
@@ -390,13 +391,13 @@ async function executeRaw(query, parameters, resource, prepare = false) {
             result = await conn.batch(query, parameters);
           } catch (err) {
             if (err.errno !== 1295) throw err;
-
             result = [];
             const stmt = await conn.prepare(query);
 
             try {
               for (const values of parameters) {
                 const response = await stmt.execute(values);
+
                 if (Array.isArray(response)) {
                   result.push(...response);
                 } else {
@@ -410,6 +411,7 @@ async function executeRaw(query, parameters, resource, prepare = false) {
         }
       } else {
         const stmt = await conn.prepare(query);
+
         try {
           result = await stmt.execute(parameters);
         } finally {
@@ -451,32 +453,76 @@ function parseArguments(query, parameters) {
   if (typeof query !== 'string') {
     throw new Error(`Expected query to be a string but received ${typeof query} instead.`);
   }
-  
+
   if (!parameters || typeof parameters === 'function') parameters = [];
-  
-  const placeholders = query.match(/\?(?!\?)/g)?.length ?? 0;
-  
-  if (!Array.isArray(parameters)) {
-    let arr = [];
-    for (let i = 0; i < placeholders; i++) {
-      arr[i] = parameters[i + 1] ?? null;
+
+  const namedParamRegex = /@([a-zA-Z_][a-zA-Z0-9_]*)|:([a-zA-Z_][a-zA-Z0-9_]*)/g;
+  const namedParams = [];
+  let match;
+  let processedQuery = query;
+  const paramPositions = [];
+
+  while ((match = namedParamRegex.exec(query)) !== null) {
+    const paramName = match[1] || match[2];
+    const fullMatch = match[0];
+    const startIndex = match.index;
+
+    let alreadyAdded = false;
+    for (const pos of paramPositions) {
+      if (pos.start === startIndex) {
+        alreadyAdded = true;
+        break;
+      }
+    }
+
+    if (!alreadyAdded) {
+      namedParams.push(paramName);
+      paramPositions.push({ start: startIndex, end: startIndex + fullMatch.length, name: paramName });
+    }
+  }
+
+  if (namedParams.length > 0 && !Array.isArray(parameters)) {
+    const arr = [];
+    for (const paramName of namedParams) {
+      arr.push(parameters[paramName] ?? null);
     }
     parameters = arr;
-  } else if (placeholders && parameters.length === 0) {
-    for (let i = 0; i < placeholders; i++) parameters[i] = null;
+
+    paramPositions.sort((a, b) => b.start - a.start);
+    for (const pos of paramPositions) {
+      processedQuery = processedQuery.substring(0, pos.start) + '?' + processedQuery.substring(pos.end);
+    }
+  } else if (Array.isArray(parameters)) {
+    const escapedPlaceholders = query.match(/\?\?/g)?.length ?? 0;
+    const regularPlaceholders = query.replace(/\?\?/g, '').match(/\?/g)?.length ?? 0;
+    const totalNeeded = regularPlaceholders;
+
+    if (parameters.length === 0 && totalNeeded > 0) {
+      for (let i = 0; i < totalNeeded; i++) parameters[i] = null;
+    }
+  } else if (!Array.isArray(parameters)) {
+    const escapedPlaceholders = query.match(/\?\?/g)?.length ?? 0;
+    const regularPlaceholders = query.replace(/\?\?/g, '').match(/\?/g)?.length ?? 0;
+    const arr = [];
+
+    for (let i = 0; i < regularPlaceholders; i++) {
+      arr[i] = parameters[i + 1] ?? null;
+    }
+
+    parameters = arr;
   }
-  
-  return [query, parameters];
+
+  return [processedQuery, parameters];
 }
 
 function createExportFunction(mode) {
-  return function(query, parameters, cb, invokingResource = GetInvokingResource()) {
+  return function (query, parameters, cb, invokingResource = GetInvokingResource()) {
     const resource = getResourceName(invokingResource);
     const callback = setCallback(parameters, cb);
-    
+
     try {
       const [parsedQuery, parsedParams] = parseArguments(query, parameters);
-      
+
       return new Promise((resolve, reject) => {
         executeQuery(parsedQuery, parsedParams, resource, mode)
           .then(result => {
@@ -499,21 +545,20 @@ function createExportFunction(mode) {
 
 const MySQL = {
   isReady: () => pool ? true : false,
-
-  awaitConnection: async function() {
+  awaitConnection: async function () {
     while (!pool) {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
+
     return true;
   },
-
-  query: function(query, parameters, cb, invokingResource = GetInvokingResource()) {
+  query: function (query, parameters, cb, invokingResource = GetInvokingResource()) {
     const resource = getResourceName(invokingResource);
     const callback = setCallback(parameters, cb);
-    
+
     try {
       const [parsedQuery, parsedParams] = parseArguments(query, parameters);
-      
+
       return new Promise((resolve, reject) => {
         executeQuery(parsedQuery, parsedParams, resource, null)
           .then(result => {
@@ -532,13 +577,11 @@ const MySQL = {
       return Promise.resolve(null);
     }
   },
-
   single: createExportFunction('single'),
   scalar: createExportFunction('scalar'),
   update: createExportFunction('update'),
   insert: createExportFunction('insert'),
-
-  transaction: function(queries, parameters, cb, invokingResource = GetInvokingResource()) {
+  transaction: function (queries, parameters, cb, invokingResource = GetInvokingResource()) {
     const resource = getResourceName(invokingResource);
     const callback = setCallback(parameters, cb);
 
@@ -562,8 +605,7 @@ const MySQL = {
         });
     });
   },
-
-  startTransaction: async function(cb, invokingResource = GetInvokingResource()) {
+  startTransaction: async function (cb, invokingResource = GetInvokingResource()) {
     const resource = getResourceName(invokingResource);
 
     while (!pool) {
@@ -581,12 +623,15 @@ const MySQL = {
       conn = await pool.getConnection();
       await conn.beginTransaction();
 
-      const query = async function(sql, parameters) {
+      const query = async function (sql, parameters) {
         if (closed) throw new Error('Transaction already closed');
+
         const [parsedQuery, parsedParams] = parseArguments(sql, parameters);
         const startTime = Date.now();
         const result = await conn.query(parsedQuery, parsedParams);
+
         logQuery(parsedQuery, parsedParams, Date.now() - startTime, resource, null);
+
         return parseResult(result, null);
       };
 
@@ -603,7 +648,7 @@ const MySQL = {
       return true;
     } catch (err) {
       if (conn && !closed) {
-        await conn.rollback().catch(() => {});
+        await conn.rollback().catch(() => { });
       }
 
       console.log(`^1[mariaDB] Error in ${resource}: ${err.message}^0`);
@@ -612,14 +657,13 @@ const MySQL = {
       if (conn) conn.release();
     }
   },
-
-  prepare: function(query, parameters, cb, invokingResource = GetInvokingResource()) {
+  prepare: function (query, parameters, cb, invokingResource = GetInvokingResource()) {
     const resource = getResourceName(invokingResource);
     const callback = setCallback(parameters, cb);
-    
+
     try {
       const [parsedQuery, parsedParams] = parseArguments(query, parameters);
-      
+
       return new Promise((resolve, reject) => {
         executeRaw(parsedQuery, parsedParams, resource, true)
           .then(result => {
@@ -638,14 +682,13 @@ const MySQL = {
       return Promise.resolve(null);
     }
   },
-
-  rawExecute: function(query, parameters, cb, invokingResource = GetInvokingResource()) {
+  rawExecute: function (query, parameters, cb, invokingResource = GetInvokingResource()) {
     const resource = getResourceName(invokingResource);
     const callback = setCallback(parameters, cb);
-    
+
     try {
       const [parsedQuery, parsedParams] = parseArguments(query, parameters);
-      
+
       return new Promise((resolve, reject) => {
         executeRaw(parsedQuery, parsedParams, resource, false)
           .then(result => {
@@ -664,21 +707,21 @@ const MySQL = {
       return Promise.resolve(null);
     }
   },
-
-  store: function(query, cb) {
+  store: function (query, cb) {
     if (typeof query !== 'string') throw new Error('Query must be a string');
+
     const storeN = stats.queries.length + 1;
+
     if (cb) cb(storeN);
     return storeN;
   },
-
-  execute: function(query, parameters, cb, invokingResource = GetInvokingResource()) {
+  execute: function (query, parameters, cb, invokingResource = GetInvokingResource()) {
     const resource = getResourceName(invokingResource);
     const callback = setCallback(parameters, cb);
-    
+
     try {
       const [parsedQuery, parsedParams] = parseArguments(query, parameters);
-      
+
       return new Promise((resolve, reject) => {
         executeQuery(parsedQuery, parsedParams, resource, null)
           .then(result => {
@@ -697,14 +740,13 @@ const MySQL = {
       return Promise.resolve(null);
     }
   },
-
-  fetch: function(query, parameters, cb, invokingResource = GetInvokingResource()) {
+  fetch: function (query, parameters, cb, invokingResource = GetInvokingResource()) {
     const resource = getResourceName(invokingResource);
     const callback = setCallback(parameters, cb);
-    
+
     try {
       const [parsedQuery, parsedParams] = parseArguments(query, parameters);
-      
+
       return new Promise((resolve, reject) => {
         executeQuery(parsedQuery, parsedParams, resource, null)
           .then(result => {
@@ -723,38 +765,36 @@ const MySQL = {
       return Promise.resolve(null);
     }
   },
-
   getStats: () => stats,
-
-  clearStats: function() {
+  clearStats: function () {
     stats = {
       totalQueries: 0,
       failedQueries: 0,
       slowQueries: 0,
       avgExecutionTime: 0,
       queries: [],
-      connections: { active: 0, idle: 0, total: 0 }
+      connections: {
+        active: 0,
+        idle: 0,
+        total: 0
+      }
     };
+
     return true;
   },
-
-  escape: function(value) {
+  escape: function (value) {
     if (!pool) return null;
     return pool.escape(value);
   },
-
   formatDate: formatDate,
 };
 
 const exports = global.exports;
-
 for (const key in MySQL) {
   const exp = MySQL[key];
-
-  const async_exp = function(query, parameters, invokingResource = GetInvokingResource()) {
+  const async_exp = function (query, parameters, invokingResource = GetInvokingResource()) {
     return exp(query, parameters, null, invokingResource);
   };
-
   try {
     exports(key, exp);
     exports(`${key}_async`, async_exp);
@@ -764,7 +804,7 @@ for (const key in MySQL) {
   }
 }
 
-on('onResourceStop', function(resName) {
+on('onResourceStop', function (resName) {
   if (resName === GetCurrentResourceName() && pool) {
     pool.end();
     pool = null;
@@ -772,7 +812,7 @@ on('onResourceStop', function(resName) {
   }
 });
 
-setTimeout(async function() {
+setTimeout(async function () {
   while (!pool) {
     await createConnectionPool();
     if (!pool) {
