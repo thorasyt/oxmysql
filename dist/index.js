@@ -329,10 +329,13 @@ async function executeTransaction(queries, parameters, resource) {
 
       if (batchParams.length > 1) {
         await conn.batch(query, batchParams);
-        i--;
       } else {
         const queryParams = batchParams[0] || params || [];
         await conn.query(query, queryParams);
+      }
+
+      if (batchParams.length > 0) {
+        i--;
       }
     }
 
@@ -497,8 +500,10 @@ function parseArguments(query, parameters) {
     const regularPlaceholders = query.replace(/\?\?/g, '').match(/\?/g)?.length ?? 0;
     const totalNeeded = regularPlaceholders;
 
-    if (parameters.length === 0 && totalNeeded > 0) {
-      for (let i = 0; i < totalNeeded; i++) parameters[i] = null;
+    for (let i = 0; i < totalNeeded; i++) {
+      if (parameters[i] === undefined) {
+        parameters[i] = null;
+      }
     }
   } else if (!Array.isArray(parameters)) {
     const escapedPlaceholders = query.match(/\?\?/g)?.length ?? 0;
